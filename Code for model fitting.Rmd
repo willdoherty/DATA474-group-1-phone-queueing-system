@@ -1,0 +1,390 @@
+---
+title: "Report - Part 3"
+author: "Group 1"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message=FALSE, warning=FALSE)
+```
+
+Authors:
+
+- Duncan Bennie^[benniedunc@myvuw.ac.nz, ORCID iD:0009-0008-5570-5397]
+- Will Doherty^[dohertwill@myvuw.ac.nz, ORCID iD:0009-0000-6177-370X]
+- Leo Gaynor^[gaynorleo@myvuw.ac.nz, ORCID iD:0009-0005-8472-4907]
+- Sharna Granwal^[granwashar@myvuw.ac.nz, ORCID iD:0000-0003-1010-3284]
+- Samuel Non^[nonsamu@myvuw.ac.nz, ORCID iD:0009-0003-6581-2704]
+- Taichi Taniguchi (John)^[tanigutaic@myvuw.ac.nz, ORCID iD:0009-0008-0634-5399]
+
+# Analysing the Data
+
+Looking at the results from calculating the inter-arrival time, we can see that there are some slight issues with the way we recorded the data. These will be discussed in this report when relevant. In general they were to do with the way the data was stored, and the recording methodology.
+
+
+```{r}
+#Loading Required Packages and defining helper functions:
+library(readxl)
+library(dplyr)
+library(pander)
+# Reading in data
+data <- read_xlsx("Group 1 data.xlsx", sheet = 3)
+n <- length(data$`Arrival time`)
+```
+
+
+## Inter Arrival Times
+
+To calculate the inter arrival times, we had to transform the data first. As the actual start of the recording sessions were not measured, we had to set the first index to an interval of zero seconds to emulate a start time. The data was also not stored in separate sessions, so using the absolute inter arrival times, we could identify large jumps (of an hour or more) that we could split on to separate the data into the sessions.
+
+```{r message=FALSE, warning=FALSE}
+# Calculate the time differences between observation n and n+1
+time.dif <- c(0, data$`Arrival time`[2:n] - data$`Arrival time`[1:n-1])
+iat <- as.double(time.dif, units='secs')
+# Find the bounds, i.e. where the times differ by more than 1 hour
+bounds <- which(abs(iat) > 3600)
+
+# Split the data at each bound
+s1 <- data[1:(bounds[1]-1),]
+s2 <- data[(bounds[1]+1):(bounds[2]-1),]
+s3 <- data[bounds[2]:n,]
+
+# Add the inter arrival times to the original data.frame
+data$inter.arrival.time <- time.dif
+
+# Create a vector of all valid inter arrival times
+iat <- as.double(data$inter.arrival.time)
+iat <- iat[abs(iat)<3600] 
+# Ensure positive values for interarrival time
+iat <- abs(iat)
+# Avoid divide by zero errors in parameter estimation
+iat[iat==0] <- 0.001
+head(iat, 10)
+```
+
+
+### Estimating Density and Plotting Distributions
+
+Below we used `fitdistr` from the `MASS` package to estimate the parameters of both exponential and gamma distributions that could be fit to our observed data. The estimated parameters are provided in tables below.
+
+```{r message=FALSE, warning=FALSE}
+# Load Required Packages
+library(MASS)
+library(ggplot2)
+
+# fit using MLE
+fit.exp <- fitdistr(iat, "exponential")
+fit.gamma <- fitdistr(iat, "gamma")
+```
+
+```{r echo=FALSE}
+
+pander(pandoc.table(fit.exp$estimate, style="rmarkdown", col.names = c("Rate"), caption="Exponential Parameter Estimate", justify='left'))
+pander(pandoc.table(fit.gamma$estimate, style="rmarkdown", col.names = c("Shape", "Rate"), caption="Gamma Parameter Estimate"))
+```
+
+A histogram with Kernal Density Estimate, estimated Exponential Distribution and estimated Gamma Distribution was then generated using `ggplot2`. From the plotted distribution estimates (_Fig.1_), the Gamma distribution looks like it fits the observed distribution the best. 
+
+```{r}
+pred.density <- density(iat)
+x <- seq(0, max(iat), length.out = length(pred.density$y))
+
+fit.exp.density <- dexp(x, fit.exp$estimate) # mean
+fit.gamma.density <- dgamma(x, fit.gamma$estimate[1], 
+                            fit.gamma$estimate[2]) #shape and rate
+
+
+cols <- c("KDE"="red","Exponential"="blue","Gamma"="green")
+
+ggplot() +
+  geom_histogram(aes(x=iat, y=..density..), color = 'black', fill ='white') +
+  geom_density(aes(x=iat, color='KDE')) +
+  geom_line(aes(x=x, y=fit.exp.density, color='Exponential')) +
+  geom_line(aes(x=x, y=fit.gamma.density, color='Gamma')) +
+  scale_color_manual(name="Legend",values=cols) +
+  ylim(c(0, 0.01)) +
+  labs(title = "Histogram of Inter Arrival Times Frequency", 
+       subtitle = "Fitted to Exponential and Gamma Distributions")+
+  ylab("Density") +
+  xlab("Time (seconds)") + 
+  theme_minimal()
+```
+$$\text{Figure 1}$$
+
+
+### Goodness of Fit Test
+
+In the goodness of fit tests below, we chose to divide the data into a specific number of bins such that the expected number of observations for the estimated distribution was at least 5. This is a rule of thumb for contingency tables evaluated by the chi-squared GOF test (Cochran's Rule).
+
+```{r  message=FALSE, warning=FALSE}
+library(EnvStats)
+# Sample variates using estimated parameters
+set.seed(123)
+exp.variates <- rexp(length(iat), rate= fit.exp$estimate)
+set.seed(123)
+gamma.variates <- rgamma(length(iat), fit.gamma$estimate[1], 
+                         fit.gamma$estimate[2]) # shape and rate
+
+# Initial split of observations into 20 bins
+# Expected counts should be >=5
+bins.for.chisq <- seq(0, max(iat), length.out=20)
+
+observed <- table(cut(iat, bins.for.chisq))
+expected_exp <- table(cut(exp.variates, bins.for.chisq))
+expected_gam <- table(cut(gamma.variates, bins.for.chisq))
+# Bins for exp distribution.
+bins.for.chisq.exp <- append(bins.for.chisq[1:7], 1198)
+observed_exp <- table(cut(iat, bins.for.chisq.exp))
+expected_exp <- table(cut(exp.variates, bins.for.chisq.exp))
+
+# Bins for gamma distribution.
+bins.for.chisq.gam <- append(bins.for.chisq[1:9], 1198)
+observed_gam <- table(cut(iat, bins.for.chisq.gam))
+expected_gam <- table(cut(gamma.variates, bins.for.chisq.gam))
+
+
+# Create contingency tables of observed vs expected
+counts_table_exp <- data.frame(observed_exp)
+counts_table_exp$Expected_Exp <- expected_exp
+# reassign row names
+bin_names <- counts_table_exp[1]
+counts_table_exp <- counts_table_exp[,-1]
+rownames(counts_table_exp) <- bin_names[,1]
+colnames(counts_table_exp) <- c("Observed_Exp", "Expected_Exp")
+
+# Repeat for gam
+counts_table_gam <- data.frame(observed_gam)
+counts_table_gam$Expected_Gam <- expected_gam
+# reassign row names
+bin_names <- counts_table_gam[1]
+counts_table_gam <- counts_table_gam[,-1]
+rownames(counts_table_gam) <- bin_names[,1]
+colnames(counts_table_gam) <- c("Observed_Gam", "Expected_Gam")
+
+```
+
+```{r echo = FALSE}
+pander(pandoc.table(counts_table_exp, style="rmarkdown", col.names = c("Observed", "Expected"), caption="Exponential Counts"))
+pander(pandoc.table(counts_table_gam, style="rmarkdown", col.names = c("Observed", "Expected"), caption="Gamma Counts"))
+
+```
+
+Below are the Hypotheses for each Chi-Squared GOF test:
+
+$$
+\begin{aligned}
+H_0 &: \text{The observed data follow the spedified distribution.}\\
+H_1 &: \text{The observed data do not follow the spedified distribution.}
+\end{aligned}
+$$
+
+
+```{r echo=FALSE}
+### Chi square test
+# 1. Compare observed with expected exponential counts
+result <- chisq.test(x=counts_table_exp) #simulate.p.value = TRUE
+pander(result, 
+       caption="Chi-Squared GOF Test for Exponential Distribution") 
+# p-value = 5.592e-12
+```
+
+So, for the exponential distribution the p-value was $5.592\times10^{-12}$, which is strong evidence to reject $H_0$ and conclude that the observed data does not come from an exponential distribution. 
+
+```{r echo=FALSE}
+#2. Compare observed with expected gamma counts 
+result <- chisq.test(x=counts_table_gam) 
+pander(result, caption="Chi-Squared GOF Test for Gamma Distribution") 
+# p-value = 0.2001
+```
+
+However, for the gamma distribution the p-value of $0.2001$ indicates there is insufficient evidence to reject $H_0$, so we can continue under the assumption that the observed data follows the gamma distribution.
+
+## Service Times
+
+The Service times included several invalid observations that had to be removed, for example calls that went though to a 'Virtual Assistant' did not have a recorded service time.
+
+### Loading the Data
+
+```{r}
+library(lubridate)
+# Process service times, convert to seconds
+st <- data$`Service time`
+st_times <- format(st, format = "%H:%M:%S")
+st_seconds <- period_to_seconds(hms(st_times))
+
+# remove 0 service times (voice assistant) and outliers
+st_seconds<- st_seconds[st_seconds > 0 & st_seconds<3600] 
+head(st_seconds, 10)
+```
+
+### Estimating Density and Plotting Distributions
+
+The density estimates and plotted distributions were done the same way as the inter arrival times. The estimated density for the gamma distribution is again the better fit for the majority of the data, but in both this plot and the previous one there is low-alignment in the middle of the range. This is indicative of the density under fitting the longer time period data.
+
+```{r message=FALSE, warning=FALSE}
+# fit to distributions using MLE
+s_fit.exp <- fitdistr(st_seconds, "exponential")
+s_fit.gamma <- fitdistr(st_seconds, "gamma") 
+s_pred.density <- density(st_seconds)
+x <- seq(0, max(st_seconds), length.out = length(s_pred.density$y))
+
+s_fit.exp.density <- dexp(x, s_fit.exp$estimate)
+s_fit.gamma.density <- dgamma(x, s_fit.gamma$estimate[1], s_fit.gamma$estimate[2])
+```
+
+```{r echo=FALSE}
+pander(pandoc.table(s_fit.exp$estimate, style="rmarkdown", col.names = c("Rate"), caption="Exponential Parameter Estimate", justify='left'))
+pander(pandoc.table(s_fit.gamma$estimate, style="rmarkdown", col.names = c("Shape", "Rate"), caption="Gamma Parameter Estimate"))
+```
+
+
+```{r message=FALSE, warning=FALSE}
+cols <- c("KDE"="red","Exponential"="blue","Gamma"="green")
+
+ggplot() +
+  geom_histogram(aes(x=st_seconds, y=..density..), col = 'black', fill ='white') +
+  geom_density(aes(x=st_seconds, color='KDE')) +
+  geom_line(aes(x=x, y=s_fit.exp.density, color='Exponential')) +
+  geom_line(aes(x=x, y=s_fit.gamma.density, color='Gamma'))+
+  scale_color_manual(name="Legend",values=cols) +
+    ylim(c(0, 0.01)) +
+  labs(title = "Histogram of Service Time Density", 
+       subtitle = "Fitted to Exponential and Gamma Distributions")+
+  ylab("Density") +
+  xlab("Time (seconds)") + 
+  theme_minimal()
+
+```
+$$\text{Figure 2}$$
+
+
+### Goodness of Fit Test
+
+Below we have repeated the Chi-Squared GOF tests for the Service Time data.
+
+```{r}
+# Sample variates using estimated parameters
+set.seed(123)
+s_exp.variates <- rexp(length(st_seconds), rate= s_fit.exp$estimate) # mean
+set.seed(123)
+s_gamma.variates <- rgamma(length(st_seconds), s_fit.gamma$estimate[1], 
+                           s_fit.gamma$estimate[2]) # shape and rate
+
+
+# Initial split of observations into 20 bins
+# Expected counts should be >=5
+bins.for.chisq <- seq(0, max(st_seconds), length.out=20)
+
+observed <- table(cut(st_seconds, bins.for.chisq))
+expected_exp <- table(cut(s_exp.variates, bins.for.chisq))
+expected_gam <- table(cut(s_gamma.variates, bins.for.chisq))
+
+# Bins for exp distribution.
+bins.for.chisq.exp <- append(bins.for.chisq[1:8], 720)
+
+observed_exp <- table(cut(st_seconds, bins.for.chisq.exp))
+expected_exp <- table(cut(s_exp.variates, bins.for.chisq.exp))
+
+# Bins for gamma distribution.
+bins.for.chisq.gam <- append(bins.for.chisq[1:7], 720)
+
+observed_gam <- table(cut(st_seconds, bins.for.chisq.gam))
+expected_gam <- table(cut(s_gamma.variates, bins.for.chisq.gam))
+
+# Create contingency tables of observed vs expected
+counts_table_exp <- data.frame(observed_exp)
+counts_table_exp$Expected_Exp <- expected_exp
+# reassign row names
+bin_names <- counts_table_exp[1]
+counts_table_exp <- counts_table_exp[,-1]
+rownames(counts_table_exp) <- bin_names[,1]
+colnames(counts_table_exp) <- c("Observed_Exp", "Expected_Exp")
+
+
+# Repeat for gam
+counts_table_gam <- data.frame(observed_gam)
+counts_table_gam$Expected_Gam <- expected_gam
+# reassign row names
+bin_names <- counts_table_gam[1]
+counts_table_gam <- counts_table_gam[,-1]
+rownames(counts_table_gam) <- bin_names[,1]
+colnames(counts_table_gam) <- c("Observed_Gam", "Expected_Gam")
+```
+
+```{r echo=FALSE}
+pander(pandoc.table(counts_table_exp, style="rmarkdown", col.names = c("Observed", "Expected"), caption="Exponential Counts"))
+pander(pandoc.table(counts_table_gam, style="rmarkdown", col.names = c("Observed", "Expected"), caption="Gamma Counts"))
+```
+
+Below are the Hypotheses for each Chi-Squared GOF test:
+
+$$
+\begin{aligned}
+H_0 &: \text{The observed data follow the spedified distribution.}\\
+H_1 &: \text{The observed data do not follow the spedified distribution.}
+\end{aligned}
+$$
+
+```{r echo=FALSE}
+### Chi square test
+# 1. Compare observed with expected exponential counts
+result <- chisq.test(x=counts_table_exp)
+pander(result, caption="Chi-Squared GOF Test for Exponential Distribution") # p-value = 0.0001813
+```
+
+Similar to the inter arrival times, the p-value of $0.0001813$ indicates that the observed service times do not follow the estimated exponential distribution, confirmed by rejecting $H_0$.
+
+```{r echo=FALSE}
+# 2. Compare observed with expected gamma counts 
+result <- chisq.test(x=counts_table_gam) 
+pander(result, caption="Chi-Squared GOF Test for Gamma Distribution") # p-value = 0.3919
+```
+
+As expected from the previous graph (_Fig.2_), the estimated gamma distribution has a much better fit to the observed service times, reflected by the p-value of $0.3919$. We have insufficient evidence to reject the $H_0$, and so can continue under the assumption that the observed service times comes from the estimated gamma distribution. 
+
+## Best Fit Distributions
+
+### Best Fit Distribution for Inter Arrival Times
+
+The best fit for the inter arrival times is a gamma distribution with the Shape and Rate parameters given in _Table 2_.
+
+```{r, echo=F, fig.height=3}
+### Additional overlayed histogram using sampled variates
+iat_plot_df <- as.data.frame(iat)
+iat_plot_df$s_gamma <- gamma.variates
+
+ggplot(iat_plot_df) +
+  geom_histogram(aes(x=iat, y=..count.., fill='Observed'), col = 'white', bins=10) +
+  geom_histogram(aes(x=gamma.variates, y=..count.., fill='Sampled Gamma Variates'), col = 'white', bins=10) +
+  labs(x="Interarrival Time (s)", y="Count", title = "Observed Inter Arrival Times vs Best Fit") +
+  scale_fill_manual(name='Legend',values = alpha(c("Observed"="purple", "Sampled Gamma Variates"="green"),0.3)) +
+  theme_minimal()
+```
+$$ 
+\text{Figure 3}
+$$
+
+
+### Best Fit Distribution for Service Times
+
+The best fit for the service times is a gamma distribution with the Shape and Rate parameters given in _Table 8_.
+
+```{r, echo=F, fig.height=3}
+###
+st_plot_df <- as.data.frame(st_seconds)
+st_plot_df$s_gamma <- s_gamma.variates
+
+
+ggplot(st_plot_df) +
+  geom_histogram(aes(x=st_seconds, y=..count.., fill='Observed'), col = 'white', bins=10) +
+  geom_histogram(aes(x=s_gamma.variates, y=..count.., fill='Sampled Gamma Variates'), col = 'white', bins=10) +
+  labs(x="Service Time (s)", y="Count", title = "Observed Service Times vs Best Fit") +
+  scale_fill_manual(name='Legend',values = alpha(c("Observed"="purple", "Sampled Gamma Variates"="green"),0.3)) +
+  theme_minimal() 
+```
+
+$$ 
+\text{Figure 4}
+$$
